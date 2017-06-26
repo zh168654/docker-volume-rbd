@@ -1,6 +1,6 @@
 FROM ubuntu:16.04
 
-MAINTAINER Joan Vega <joan@wetopi.com>
+MAINTAINER Ye Zhang <zhangye.168@163.com>
 
 ENV CEPH_VERSION jewel
 

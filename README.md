@@ -9,7 +9,7 @@ This plugins is managed using Docker Engine plugin system.
 
 1. Docker >=1.13.1 (recommended)
 2. Ceph cluster
-3. Consul. We need a KV store to persist state. 
+3. Etcd. We need a KV store to persist state. 
 
 ## Why an external KV store?
 
@@ -24,7 +24,7 @@ Key value vars to pass when installing this plugin driver:
 ```conf
 LOG_LEVEL=[0:ErrorLevel; 1:WarnLevel; 2:InfoLevel; 3:DebugLevel] defaults to 0
 
-CONSUL_HTTP_ADDR=127.0.0.1:8500
+ETCD_ENDPOINTS=127.0.0.1:2375
 
 RBD_CONF_MAP_DEVICE_ROOT="/dev/rbd"
 RBD_CONF_CLUSTER=ceph
@@ -48,7 +48,6 @@ RBD_CONF_MDS_SESSION_TIMEOUT=120
 RBD_CONF_MDS_SESSION_AUTOCLOSE=600
 ```
 
-Note: Consul connection params are set using the Consul env vars: https://www.consul.io/docs/commands/#environment-variables
 
 
 ### 2 - Install the plugin
@@ -197,12 +196,13 @@ or its equivalent
 `journalctl -f -u docker.service`
 
 
-### Check Consul Key Value:
+### Check Etcd Key Value:
 
-Check if state stored in Consul KV is consistent:
+Check if state stored in Etcd KV is consistent:
 
 ```bash
-curl -s curl http://localhost:8500/v1/kv/docker/volume/rbd/my_rbd_volume?raw
+###Todo
+###curl -s curl http://localhost:8500/v1/kv/docker/volume/rbd/my_rbd_volume?raw
 ```
 
 ### Use curl to debug plugin socket issues.
@@ -234,3 +234,4 @@ https://github.com/yp-engineering/rbd-docker-plugin
 ## LICENSE
 
 MIT
+

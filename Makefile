@@ -1,4 +1,4 @@
-PLUGIN_NAME=wetopi/rbd
+PLUGIN_NAME=zh168654/rbd
 PLUGIN_VERSION=
 
 all: clean docker rootfs create push

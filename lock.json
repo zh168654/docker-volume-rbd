@@ -51,11 +51,11 @@
             ]
         },
         {
-            "name": "github.com/hashicorp/consul",
-            "version": "v0.8.1",
-            "revision": "e9ca44d0a1757ac9aecc6785904a701936c10e4a",
+            "name": "github.com/coreos/etcd/clientv3",
+            "version": "master",
+            "revision": "47a8156851b5a59665421661edb7c813f8a7993e",
             "packages": [
-                "api"
+                "."
             ]
         },
         {
@@ -117,3 +117,4 @@
         }
     ]
 }
+
