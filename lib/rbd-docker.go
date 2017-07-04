@@ -1,10 +1,12 @@
 package dockerVolumeRbd
 
 import (
+	"fmt"
+	"os"
+	"strconv"
+
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/go-plugins-helpers/volume"
-	"strconv"
-	"fmt"
 )
 
 // Volume is the Docker concept which we map onto a Ceph RBD Image
@@ -13,11 +15,12 @@ type Volume struct {
 	Fstype     string
 	Pool       string
 	Size       uint64
-	Order      int    // Specifies the object size expressed as a number of bits. The default is 22 (4KB).
+	Order      int // Specifies the object size expressed as a number of bits. The default is 22 (4KB).
 	Mountpoint string
 	Device     string
+	Clonefrom  string
+	Features   uint64
 }
-
 
 // Implement the Docker VolumeDriver API via volume interface
 // https://github.com/docker/go-plugins-helpers/blob/master/volume/api.go
@@ -53,13 +56,15 @@ func (d *rbdDriver) Create(r volume.Request) volume.Response {
 	defer d.Unlock()
 
 	v := &Volume{
-		Name: r.Name,
-		Fstype: "ext4",
-		Pool: "",
-		Size: 512, // 512MB
-		Order: 22, // 4KB Objects
-		Mountpoint: "", // Unmounted when ""
-		Device: "",
+		Name:       r.Name,
+		Fstype:     "xfs",
+		Pool:       os.Getenv("RBD_CONF_POOL"),
+		Size:       512, // 512MB
+		Order:      22,  // 4KB Objects
+		Mountpoint: "",  // Unmounted when ""
+		Device:     "",
+		Clonefrom:  "",
+		Features:   1,
 	}
 
 	for key, val := range r.Options {
@@ -80,6 +85,14 @@ func (d *rbdDriver) Create(r volume.Request) volume.Response {
 			v.Order = order
 		case "fstype":
 			v.Fstype = val
+		case "clonefrom":
+			v.Clonefrom = val
+		case "features":
+			var features, err = strconv.ParseUint(val, 10, 64)
+			if err != nil {
+				return responseError(fmt.Sprintf("unable to parse features int: %s", err))
+			}
+			v.Features = features
 		default:
 			return responseError(fmt.Sprintf("unknown option %q", val))
 		}
@@ -88,7 +101,6 @@ func (d *rbdDriver) Create(r volume.Request) volume.Response {
 	if v.Pool == "" {
 		return responseError("'pool' option required")
 	}
-
 
 	// connect to ceph
 	err := d.connect(v.Pool)
@@ -105,10 +117,18 @@ func (d *rbdDriver) Create(r volume.Request) volume.Response {
 
 	if !exists {
 		// try to create it
-		err = d.createRbdImage(v.Pool, v.Name, v.Size, v.Order, v.Fstype)
-		if err != nil {
-			return responseError(fmt.Sprintf("unable to create Ceph RBD Image(%s): %s", v.Name, err))
+		if v.Clonefrom == "" {
+			err = d.createRbdImage(v.Pool, v.Name, v.Size, v.Order, v.Fstype)
+			if err != nil {
+				return responseError(fmt.Sprintf("unable to create Ceph RBD Image(%s): %s", v.Name, err))
+			}
+		} else {
+			err = d.cloneRbdImage(v.Clonefrom, v.Pool, v.Name, v.Features, v.Order, v.Fstype)
+			if err != nil {
+				return responseError(fmt.Sprintf("unable to create Ceph RBD Image(%s): %s", v.Name, err))
+			}
 		}
+
 	}
 
 	err = d.setVolume(v)
@@ -188,7 +208,6 @@ func (d *rbdDriver) Path(r volume.Request) volume.Response {
 	return volume.Response{Mountpoint: v.Mountpoint}
 }
 
-
 // Mount will Ceph Map the RBD image to the local kernel and create a mount
 // point and mount the image.
 //
@@ -238,7 +257,6 @@ func (d *rbdDriver) Mount(r volume.MountRequest) volume.Response {
 	return volume.Response{Mountpoint: v.Mountpoint}
 }
 
-
 // POST /VolumeDriver.Unmount
 //
 // Request:
@@ -283,7 +301,6 @@ func (d *rbdDriver) Unmount(r volume.UnmountRequest) volume.Response {
 	return volume.Response{}
 }
 
-
 // Get the volume info.
 //
 // POST /VolumeDriver.Get
@@ -315,7 +332,6 @@ func (d *rbdDriver) Get(r volume.Request) volume.Response {
 
 	return volume.Response{Volume: &volume.Volume{Name: r.Name, Mountpoint: v.Mountpoint}}
 }
-
 
 // Get the list of volumes registered with the plugin.
 //

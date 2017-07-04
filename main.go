@@ -1,10 +1,10 @@
 package main
 
 import (
-	"os"
+    "os"
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/go-plugins-helpers/volume"
-	"github.com/zh168654/docker-volume-rbd/lib"
+	"gitserver/iop/docker-volume-rbd/lib"
 )
 
 const socketAddress = "/run/docker/plugins/rbd.sock"
@@ -13,11 +13,16 @@ const socketAddress = "/run/docker/plugins/rbd.sock"
 
 func main() {
 
-	dockerVolumeRbdVersion := os.Getenv("PLUGIN_VERSION")
+	dockerVolumeRbdVersion := "1.0"
+	err, rbdDriver := dockerVolumeRbd.NewDriver()
+
+	if err != nil {
+		logrus.Fatal(err)
+	}
 
 	logLevel := os.Getenv("LOG_LEVEL")
 
-		switch logLevel {
+	switch logLevel {
 		case "3":
 			logrus.SetLevel(logrus.DebugLevel)
 			break;
@@ -30,12 +35,13 @@ func main() {
 		default:
 			logrus.SetLevel(logrus.ErrorLevel)
 		}
+	 file, err := os.OpenFile("/var/lib/docker-volume-rbd/rbd.log", os.O_CREATE|os.O_WRONLY, 0666)
+	 if err == nil {
+		 logrus.SetOutput(file)
+	 } else {
+		 logrus.SetOutput(os.Stdout)
+	 }
 
-
-	err, rbdDriver := dockerVolumeRbd.NewDriver()
-	if err != nil {
-		logrus.Fatal(err)
-	}
 
 	h := volume.NewHandler(rbdDriver)
 	logrus.Infof("plugin(rbd) version(%s) started with log level(%s) attending socket(%s)", dockerVolumeRbdVersion, logLevel, socketAddress)

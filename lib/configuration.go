@@ -2,11 +2,17 @@ package dockerVolumeRbd
 
 import (
 	"os"
+	"flag"
 	"text/template"
 	"github.com/Sirupsen/logrus"
 	"strings"
+	"github.com/larspensjo/config"
+
 )
 
+var  (
+	configFile = flag.String("configfile", "/var/lib/docker-volume-rbd/rbd-volume-plugin.ini", "rbd volume configuration file")
+)
 
 
 // Configure Ceph
@@ -16,23 +22,23 @@ import (
 //
 func (d *rbdDriver) configure() error {
 
-	var err error
+	//var err error
 
 	// set default confs:
 	d.conf["cluster"] = "ceph"
 	d.conf["device_map_root"] = "/dev/rbd"
 
-	d.loadEnvironmentRbdConfigVars();
-
-	err = createConf("templates/ceph.conf.tmpl", "/etc/ceph/ceph.conf", d.conf);
-	if err != nil {
-		return err
-	}
-
-	err = createConf("templates/ceph.keyring.tmpl", "/etc/ceph/ceph.keyring", d.conf);
-	if err != nil {
-		return err
-	}
+	d.loadRbdConfigVars();
+	//var err error
+	//err = createConf("templates/ceph.conf.tmpl", "/etc/ceph/ceph.conf", d.conf);
+	//if err != nil {
+	//	return err
+	//}
+	//
+	//err = createConf("templates/ceph.keyring.tmpl", "/etc/ceph/ceph.keyring", d.conf);
+	//if err != nil {
+	//	return err
+	//}
 
 	return nil
 }
@@ -52,6 +58,38 @@ func (d *rbdDriver) loadEnvironmentRbdConfigVars() {
 	}
 
 }
+// Get only the env vars starting by RBD_CONF_*
+// i.e. RBD_CONF_GLOBAL_MON_HOST is saved in d.conf[global_mon_host]
+//
+func (d *rbdDriver) loadRbdConfigVars() {
+
+	flag.Parse()
+	cfg, err := config.ReadDefault(*configFile)
+	if err != nil {
+		logrus.Error("read default config file failed")
+	}
+	//set config file std End
+
+	//Initialized topic from the configuration
+	if cfg.HasSection("default") {
+		section, err := cfg.SectionOptions("default")
+		if err == nil {
+			for _, v := range section {
+				options, _ := cfg.String("default", v)
+				logrus.Info("add env "+v+"="+options)
+				os.Setenv(v,options)
+				if (strings.HasPrefix(v, "RBD_CONF_")) {
+					configPair := strings.Split(v, "RBD_CONF_")
+					d.conf[strings.ToLower(configPair[1])] = options
+				}
+
+			}
+		}
+	}
+
+}
+
+
 
 func createConf(templateFile string, outputFile string, config map[string]string) error {
 

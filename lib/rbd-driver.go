@@ -1,35 +1,36 @@
 package dockerVolumeRbd
 
 import (
+	"errors"
+	"fmt"
+	"gitserver/iop/docker-volume-rbd/lib/try"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/Sirupsen/logrus"
 	"github.com/ceph/go-ceph/rados"
 	"github.com/ceph/go-ceph/rbd"
-	"github.com/zh168654/docker-volume-rbd/lib/try"
-	"sync"
-	"path/filepath"
-	"fmt"
-	"os/exec"
-	"errors"
-	"time"
-	"regexp"
-	"os"
 )
 
 type rbdDriver struct {
-	root  string            // scratch dir for mounts for this plugin
-	conf  map[string]string // ceph config params
+	root string            // scratch dir for mounts for this plugin
+	conf map[string]string // ceph config params
 
-	sync.RWMutex            // mutex to guard operations that change volume maps or use conn
+	sync.RWMutex // mutex to guard operations that change volume maps or use conn
 
-	conn  *rados.Conn       // create a connection for each API operation
-	ioctx *rados.IOContext  // context for requested pool
+	conn  *rados.Conn      // create a connection for each API operation
+	ioctx *rados.IOContext // context for requested pool
 }
 
 var (
 	rbdUnmapBusyRegexp = regexp.MustCompile(`^exit status 16$`)
-	rbdBusyRegexp = regexp.MustCompile(`ret=-16$`)
+	rbdBusyRegexp      = regexp.MustCompile(`ret=-16$`)
 )
-
 
 // newDriver factory
 // builds the driver struct,
@@ -39,7 +40,7 @@ func NewDriver() (error, *rbdDriver) {
 	logrus.WithField("rbd-driver.go", "rbdDriver.NewDriver").Info("launching rbd driver")
 
 	driver := &rbdDriver{
-		root: filepath.Join("/mnt", "volumes"),
+		root: "/var/lib/docker-volume-rbd/volumes",
 		conf: make(map[string]string),
 	}
 
@@ -50,7 +51,6 @@ func NewDriver() (error, *rbdDriver) {
 
 	return nil, driver
 }
-
 
 // connect builds up the ceph conn and default pool
 func (d *rbdDriver) connect(pool string) error {
@@ -71,7 +71,7 @@ func (d *rbdDriver) connect(pool string) error {
 	}
 
 	// set conf
-	err = cephConn.ReadDefaultConfigFile()
+	err = cephConn.ReadConfigFile("/etc/ceph/ceph.conf")
 	if err != nil {
 		logrus.WithField("rbd-driver.go", "rbdDriver.connect").Errorf("unable to read config /etc/ceph/ceph.conf: %s", err.Error())
 		return err
@@ -97,7 +97,6 @@ func (d *rbdDriver) connect(pool string) error {
 
 	return nil
 }
-
 
 // shutdown closes the connection - maybe not needed unless we recreate conn?
 // more info:
@@ -134,7 +133,6 @@ func (d *rbdDriver) rbdImageExists(pool string, imageName string) (error, bool) 
 	return nil, true
 }
 
-
 // createRbdImage will create a new Ceph block device and make a filesystem on it
 func (d *rbdDriver) createRbdImage(pool string, imageName string, size uint64, order int, fstype string) error {
 	logrus.WithField("rbd-driver.go", "rbdDriver.createRbdImage").Infof("create image(%s) in pool(%s) with size(%dMB) and fstype(%s)", imageName, pool, size, fstype)
@@ -145,14 +143,13 @@ func (d *rbdDriver) createRbdImage(pool string, imageName string, size uint64, o
 		return errors.New(fmt.Sprintf("unable to find mkfs.(%s): %s", fstype, err))
 	}
 
-
 	// create the image
 	sizeInBytes := size * 1024 * 1024
 	_, err = rbd.Create(d.ioctx, imageName, sizeInBytes, order)
+
 	if err != nil {
 		return err
 	}
-
 
 	// map to kernel device only to initialize
 	device, err := d.mapImage(pool, imageName)
@@ -162,13 +159,74 @@ func (d *rbdDriver) createRbdImage(pool string, imageName string, size uint64, o
 	}
 
 	// make the filesystem (give it some time)
-	_, err = shWithTimeout(5 * time.Minute, mkfs, device)
+	_, err = shWithTimeout(5*time.Minute, mkfs, device)
 	if err != nil {
 		d.unmapImageDevice(device)
 		defer d.removeRbdImage(device)
 		return err
 	}
 
+	// unmap until a container mounts it
+	defer d.unmapImageDevice(device)
+
+	return nil
+}
+
+// cloneRbdImage will create a new Ceph block device from snap and make a filesystem on it
+func (d *rbdDriver) cloneRbdImage(clonefrom string, pool string, imageName string, features uint64, order int, fstype string) error {
+	logrus.WithField("rbd-driver.go", "rbdDriver.createRbdImage").Infof("create image(%s) in pool(%s) with fstype(%s) from snapshot(%s)", imageName, pool, fstype, clonefrom)
+
+	// check that fs is valid type (needs mkfs.fstype in PATH)
+	mkfs, err := exec.LookPath("mkfs." + fstype)
+	if err != nil {
+		return errors.New(fmt.Sprintf("unable to find mkfs.(%s): %s", fstype, err))
+	}
+
+	cloneInfo := strings.Split(clonefrom, "@")
+	if len(cloneInfo) < 2 {
+		return errors.New(fmt.Sprintf("clonefrom should be in format imagename@snapshotname"))
+	}
+	sourceImageName := strings.Split(clonefrom, "@")[0]
+	snapname := strings.Split(clonefrom, "@")[1]
+	sourceImage := rbd.GetImage(d.ioctx, sourceImageName)
+	snapshot := sourceImage.GetSnapshot(snapname)
+
+	isProtected, err := snapshot.IsProtected()
+	if err != nil {
+		return errors.New(fmt.Sprintf("unable to get protected status for snapshot : %s", err))
+	}
+	if !isProtected {
+		err = snapshot.Protect()
+		if err != nil {
+			return errors.New(fmt.Sprintf("unable to protect snapshot : %s", err))
+		}
+	}
+	// create the image
+	_, err = sourceImage.Clone(snapname, d.ioctx, imageName, features, order)
+
+	if err != nil {
+		return err
+	}
+
+	err = snapshot.Unprotect()
+	if err != nil {
+		return errors.New(fmt.Sprintf("unable to unprotect snapshot : %s", err))
+	}
+
+	// map to kernel device only to initialize
+	device, err := d.mapImage(pool, imageName)
+	if err != nil {
+		defer d.removeRbdImage(device)
+		return err
+	}
+
+	// make the filesystem (give it some time)
+	_, err = shWithTimeout(5*time.Minute, mkfs, device)
+	if err != nil {
+		d.unmapImageDevice(device)
+		defer d.removeRbdImage(device)
+		return err
+	}
 
 	// unmap until a container mounts it
 	defer d.unmapImageDevice(device)
@@ -186,11 +244,10 @@ func (d *rbdDriver) removeRbdImage(name string) error {
 	return rbdImage.Remove()
 }
 
-
 /**
 In case of race condition (the unmount and remove can be called async from different swarm nodes)
 we try to remove up to 3 times.
- */
+*/
 func (d *rbdDriver) removeRbdImageWithRetries(name string) error {
 
 	err := try.Do(func(attempt int) (bool, error) {
@@ -198,7 +255,7 @@ func (d *rbdDriver) removeRbdImageWithRetries(name string) error {
 		err = d.removeRbdImage(name)
 
 		if err != nil && rbdBusyRegexp.MatchString(err.Error()) {
-			const MAX_ATTEMPTS = 3;
+			const MAX_ATTEMPTS = 3
 			time.Sleep(2 * time.Second)
 
 			return attempt < MAX_ATTEMPTS, err
@@ -215,20 +272,17 @@ func (d *rbdDriver) mountRbdImage(pool string, imageName string, fstype string) 
 
 	mountpoint = d.getTheMountPointPath(imageName)
 
-
 	// map the RBD image
 	device, err = d.mapImage(pool, imageName)
 	if err != nil {
 		return fmt.Errorf("unable to map rbd image(%s) to kernel device: %s", imageName, err), "", ""
 	}
 
-
 	// check for mountdir - create if necessary
-	err = os.MkdirAll(mountpoint, os.ModeDir | os.FileMode(int(0775)))
+	err = os.MkdirAll(mountpoint, os.ModeDir|os.FileMode(int(0775)))
 	if err != nil {
 		return fmt.Errorf("unable to make mountpoint(%s): %s", mountpoint, err), "", ""
 	}
-
 
 	// mount
 	err = d.mountDevice(device, fstype, mountpoint)
@@ -246,7 +300,7 @@ first find all maps done on current plugin node
 then unmount + unmap and finally remove mountpoint dir
 
 We do all this silently, we want the freeUp process idempotent
- */
+*/
 func (d *rbdDriver) freeUpRbdImage(pool string, imageName string, mountpoint string) error {
 	logrus.WithField("rbd-driver.go", "rbdDriver.freeUpRbdImage").Infof("free up image(%s)", imageName)
 
@@ -272,7 +326,6 @@ func (d *rbdDriver) freeUpRbdImage(pool string, imageName string, mountpoint str
 		}
 	}
 
-
 	// remove mountpoint
 	if mountpoint != "" {
 		err = os.Remove(mountpoint)
@@ -284,10 +337,7 @@ func (d *rbdDriver) freeUpRbdImage(pool string, imageName string, mountpoint str
 	return nil
 }
 
-
-
 // mountPointOnHost returns the expected path on host
 func (d *rbdDriver) getTheMountPointPath(name string) string {
 	return filepath.Join(d.root, name)
 }
-

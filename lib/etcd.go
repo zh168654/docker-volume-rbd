@@ -11,7 +11,7 @@ import (
 
 // TODO create a "state" interface and factory in order to use different state backends
 
-const KEY_PREFIX = "docker/volume/rbd/"
+const KEY_PREFIX = "/docker/volume/plugin/rbd/"
 
 func (d *rbdDriver) setVolume(v *Volume) error {
 	logrus.WithField("etcd.go", "setVolume").Debugf("%#v", v)
@@ -85,7 +85,7 @@ func (d *rbdDriver) getVolumes() (error, *map[string]*Volume) {
 	if err != nil {
 		return err, nil
 	}
-	res, err := kv.Get(context.Background(), KEY_PREFIX)
+	res, err := kv.Get(context.Background(), KEY_PREFIX,client.WithPrefix())
 	if err != nil {
 		logrus.WithField("etcd.go", "getVolumes").Error(err)
 		return err, nil
