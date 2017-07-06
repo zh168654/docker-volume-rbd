@@ -177,58 +177,67 @@ func (d *rbdDriver) cloneRbdImage(clonefrom string, pool string, imageName strin
 	logrus.WithField("rbd-driver.go", "rbdDriver.createRbdImage").Infof("create image(%s) in pool(%s) with fstype(%s) from snapshot(%s)", imageName, pool, fstype, clonefrom)
 
 	// check that fs is valid type (needs mkfs.fstype in PATH)
-	mkfs, err := exec.LookPath("mkfs." + fstype)
-	if err != nil {
-		return errors.New(fmt.Sprintf("unable to find mkfs.(%s): %s", fstype, err))
-	}
+	//	mkfs, err := exec.LookPath("mkfs." + fstype)
+	//	if err != nil {
+	//		return errors.New(fmt.Sprintf("unable to find mkfs.(%s): %s", fstype, err))
+	//	}
 
 	cloneInfo := strings.Split(clonefrom, "@")
 	if len(cloneInfo) < 2 {
 		return errors.New(fmt.Sprintf("clonefrom should be in format imagename@snapshotname"))
 	}
 	sourceImageName := strings.Split(clonefrom, "@")[0]
-	snapname := strings.Split(clonefrom, "@")[1]
-	sourceImage := rbd.GetImage(d.ioctx, sourceImageName)
-	snapshot := sourceImage.GetSnapshot(snapname)
+	snapName := strings.Split(clonefrom, "@")[1]
 
-	isProtected, err := snapshot.IsProtected()
-	if err != nil {
-		return errors.New(fmt.Sprintf("unable to get protected status for snapshot : %s", err))
+	sourceImage := rbd.GetImage(d.ioctx, sourceImageName)
+
+	// we should open base image first
+	if err := sourceImage.Open(); err != nil {
+		return errors.New(fmt.Sprintf("rbd open image failed: %s", err))
 	}
-	if !isProtected {
-		err = snapshot.Protect()
-		if err != nil {
-			return errors.New(fmt.Sprintf("unable to protect snapshot : %s", err))
+	defer sourceImage.Close()
+	// get snapshot
+	snapshot := sourceImage.GetSnapshot(snapName)
+
+	pFlag, err := snapshot.IsProtected()
+	if err != nil {
+		return errors.New(fmt.Sprintf("rbd get snapshot protect status failed: %s", err))
+	}
+
+	if pFlag == false {
+		// protect snapshot
+		if err := snapshot.Protect(); err != nil {
+			return errors.New(fmt.Sprintf("rbd protect snapshot failed: %s", err))
 		}
 	}
-	// create the image
-	_, err = sourceImage.Clone(snapname, d.ioctx, imageName, features, order)
 
+	// make a clone image based on the snap shot
+	_, err = sourceImage.Clone(snapName, d.ioctx, imageName, rbd.RbdFeatureLayering, order)
 	if err != nil {
-		return err
+		return errors.New(fmt.Sprintf("rbd clone snapshot failed: %s", err))
 	}
 
-	err = snapshot.Unprotect()
-	if err != nil {
-		return errors.New(fmt.Sprintf("unable to unprotect snapshot : %s", err))
-	}
+	//err = snapshot.Unprotect()
+	//if err != nil {
+	//	return errors.New(fmt.Sprintf("unable to unprotect snapshot : %s", err))
+	//}
 
-	// map to kernel device only to initialize
+	//map to kernel device only to initialize
 	device, err := d.mapImage(pool, imageName)
 	if err != nil {
 		defer d.removeRbdImage(device)
-		return err
+		return errors.New(fmt.Sprintf("rbd map image failed: %s", err))
 	}
 
-	// make the filesystem (give it some time)
-	_, err = shWithTimeout(5*time.Minute, mkfs, device)
-	if err != nil {
-		d.unmapImageDevice(device)
-		defer d.removeRbdImage(device)
-		return err
-	}
+	//make the filesystem (give it some time)
+	//	_, err = shWithTimeout(5*time.Minute, mkfs, device)
+	//	if err != nil {
+	//		d.unmapImageDevice(device)
+	//		defer d.removeRbdImage(device)
+	//		return err
+	//	}
 
-	// unmap until a container mounts it
+	//unmap until a container mounts it
 	defer d.unmapImageDevice(device)
 
 	return nil
